@@ -45,7 +45,7 @@ func (d *BA) GetTickets(plateNumber string) ([]models.Ticket, error) {
 }
 
 func parseBARawTickets(ticketResponse map[string]interface{}) ([]models.Ticket, error) {
-	ticketsCount, _ := ticketResponse["tieneInfracciones"].(float64)
+	ticketsCount, _ := ticketResponse["totalInfracciones"].(float64)
 	if ticketsCount == 0 {
 		return nil, nil
 	}
@@ -71,8 +71,8 @@ func parseBARawTickets(ticketResponse map[string]interface{}) ([]models.Ticket, 
 			}
 		}
 
-		ticketDate, _ := ticket["fechaInfraccion"].(int64)
-		ticketDueDate, _ := ticket["fechaVencimiento"].(int64)
+		ticketDate, _ := ticket["fechaInfraccion"].(float64)
+		ticketDueDate, _ := ticket["fechaVencimiento"].(float64)
 
 		tickets = append(tickets, models.Ticket{
 			Description:   description,
@@ -92,7 +92,7 @@ func (d *BA) getBARawTickets(plateNumber, captchaCode string) (map[string]interf
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
-	req, err := http.NewRequest("GET", fmt.Sprintf(`%s?dominio=%s&captcha=%s`, d.baseURL, plateNumber, captchaCode), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf(`%s?dominio=%s&reCaptcha=%s&cantPorPagina=10&paginaActual=1`, d.baseURL, plateNumber, captchaCode), nil)
 
 	if err != nil {
 		return nil, err
