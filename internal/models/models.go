@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // District ...
 type District interface {
@@ -15,6 +18,11 @@ type Ticket struct {
 	TicketNumber  string
 	Date          time.Time
 	DueDate       time.Time
+}
+
+// DescriptionEscaped ...
+func (t *Ticket) DescriptionEscaped() string {
+	return strings.ReplaceAll(t.Description, "*", "\\*")
 }
 
 // NotificationChannel ...

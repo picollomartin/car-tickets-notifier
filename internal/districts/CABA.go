@@ -2,6 +2,8 @@ package districts
 
 import (
 	"net/http"
+	"net/http/httputil"
+	"strconv"
 
 	"github.com/PuerkitoBio/goquery"
 
@@ -31,9 +33,6 @@ func (d *CABA) Name() string {
 
 type requestMetadata struct {
 	captchaCode string
-	sid         string
-	token       string
-	formBuildID string
 }
 
 // GetTickets ...
@@ -64,98 +63,52 @@ func (d *CABA) getCABARequestMetadata() (*requestMetadata, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fail getting captcha code: %w", err)
 	}
-	return d.lookupCABARequestMetadata(captchaCode)
-}
-
-func (d *CABA) lookupCABARequestMetadata(captchaCode string) (*requestMetadata, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", d.baseURL, nil)
-
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("fail parsing body of CABA url for lookup metadata info: %w", err)
-	}
-
-	captchaSid, ok := doc.Find("[name=captcha_sid]").Attr("value")
-	if !ok {
-		return nil, fmt.Errorf("captcha_sid metadata not found")
-	}
-
-	captchaToken, ok := doc.Find("[name=captcha_token]").Attr("value")
-	if !ok {
-		return nil, fmt.Errorf("captcha_token metadata not found")
-	}
-
-	var formBuildID string
-	doc.Find("[id=gcaba-infracciones-form]").Children().Each(func(i int, selection *goquery.Selection) {
-		if attr, ok := selection.Attr("name"); ok && attr == "form_build_id" {
-			formBuildID, _ = selection.Attr("value")
-		}
-	})
-	if formBuildID == "" {
-		return nil, fmt.Errorf("form_build_id metadata not found")
-	}
-
 	return &requestMetadata{
 		captchaCode: captchaCode,
-		sid:         captchaSid,
-		token:       captchaToken,
-		formBuildID: formBuildID,
 	}, nil
 }
 
-func (d *CABA) getCABARawTickets(plateNumber string, metadata *requestMetadata) ([]map[string]interface{}, error) {
+func (d *CABA) getCABARawTickets(plateNumber string, metadata *requestMetadata) (string, error) {
 	rawPayload := fmt.Sprintf(
-		`tipo_consulta=Dominio&dominio=%s&tipo_doc=DNI&doc=&form_build_id=%s&captcha_sid=%s&captcha_token=%s&captcha_response=Google+no+captcha&g-recaptcha-response=%s&form_id=gcaba_infracciones_form`,
-		plateNumber, metadata.formBuildID, metadata.sid, metadata.token, metadata.captchaCode)
+		`tipo_consulta=Dominio&dominio=%s&tipo_doc=DNI&doc=&g-recaptcha-response=%s`,
+		plateNumber, metadata.captchaCode)
 	payload := strings.NewReader(rawPayload)
 
 	client := &http.Client{}
 	req, err := http.NewRequest("POST", d.apiURL, payload)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer res.Body.Close()
 
-	var data []map[string]interface{}
-	err = json.NewDecoder(res.Body).Decode(&data)
+	b, err := httputil.DumpResponse(res, true)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	return data, nil
+	return string(b), nil
 }
 
-func parseCABARawTickets(rawTicketResponse []map[string]interface{}) ([]models.Ticket, error) {
-	if len(rawTicketResponse) < 2 {
-		return nil, fmt.Errorf("invalid ticket response: %v", rawTicketResponse)
-	}
-	formattedHtml := strings.NewReader(rawTicketResponse[1]["data"].(string))
+func parseCABARawTickets(rawTicketResponse string) ([]models.Ticket, error) {
+	formattedHtml := strings.NewReader(rawTicketResponse)
 	doc, err := goquery.NewDocumentFromReader(formattedHtml)
 	if err != nil {
 		return nil, fmt.Errorf("fail parsing ticket response into html: %w", err)
 	}
-	_, ok := doc.Find("[id=form-sin-deuda-submit]").Attr("value")
+	_, ok := doc.Find("[id=descarga_libre_deuda]").Attr("class")
 	if ok { // No registered debt
 		return nil, nil
 	}
 	var ticketsJSON []string
 
-	doc.Find(".accordionActasComprobantes").ChildrenFiltered(".panel-default").Each(func(i int, selection *goquery.Selection) {
-		ticketSelector := selection.Find(".panel-title").ChildrenFiltered(".text-center").Children()
-		jsonTicketData, ok := ticketSelector.Attr("data-json")
+	doc.Find("input[type='checkbox'][name='actas[]']").Each(func(i int, selection *goquery.Selection) {
+		jsonTicketData, ok := selection.Attr("data-json")
 		if ok {
 			ticketsJSON = append(ticketsJSON, jsonTicketData)
 		} else { // We inject one manual check if json data is not present, happen when a ticket should be checked before payment
@@ -183,15 +136,18 @@ func parseCABARawTickets(rawTicketResponse []map[string]interface{}) ([]models.T
 
 func mapRawTicket(rawTicket map[string]interface{}) (models.Ticket, error) {
 	ticketNumber, _ := rawTicket["numeroActa"].(string)
-	amount, _ := rawTicket["montoActa"].(float64)
+	rawAmount, _ := rawTicket["montoActa"].(string)
+	amount, err := strconv.Atoi(rawAmount)
+	if err != nil {
+		return models.Ticket{}, fmt.Errorf("parsing amount: %w of ticket: %s", err, ticketNumber)
+	}
 	ticketDate, _ := time.Parse("2006-01-02 15:04", rawTicket["fechaActa"].(string))
-	dueDate, _ := time.Parse("02-01-2006", rawTicket["fechaVencimiento"].(string))
 	description := ""
 	violations, _ := rawTicket["infracciones"].([]interface{})
 
 	for _, rawViolation := range violations {
 		if violation, ok := rawViolation.(map[string]interface{}); ok {
-			violationDescription, _ := violation["descripcion"]
+			violationDescription, _ := violation["desc"]
 			violationPlace, _ := violation["lugar"]
 			if description == "" {
 				description = fmt.Sprintf("%s - %s", violationPlace, violationDescription)
@@ -206,6 +162,5 @@ func mapRawTicket(rawTicket map[string]interface{}) (models.Ticket, error) {
 		AmountInCents: int64(amount * 100), // to cents
 		TicketNumber:  ticketNumber,
 		Date:          ticketDate,
-		DueDate:       dueDate,
 	}, nil
 }

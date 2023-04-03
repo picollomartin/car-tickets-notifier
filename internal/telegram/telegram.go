@@ -28,11 +28,11 @@ func New(token string, chatID int64) (*Telegram, error) {
 // Send ...
 func (t *Telegram) Send(msg string) error {
 	escapedMsg := escapeMessage(msg)
-	batchs := int(math.Ceil(float64(len(escapedMsg)) / MaxMsgLength))
+	batchs := int(math.Ceil(float64(len(escapedMsg)) / float64(MaxMsgLength)))
 
 	for i := 0; i < batchs; i++ {
 		batchStart := MaxMsgLength * i
-		batchFinish := min(batchStart+MaxMsgLength, len(msg))
+		batchFinish := min(batchStart+MaxMsgLength, len(msg)-1)
 		_, err := t.client.Send(tgbotapi.MessageConfig{
 			BaseChat: tgbotapi.BaseChat{
 				ChatID:           t.chatID,

@@ -8,6 +8,7 @@ import (
 	"github.com/leekchan/accounting"
 
 	"car-tickets-notifier/internal/models"
+
 	"github.com/google/martian/log"
 )
 
@@ -18,6 +19,8 @@ func Notify(notificationChannel models.NotificationChannel, plateNumber string, 
 		tickets, err := district.GetTickets(plateNumber)
 		if err != nil {
 			log.Errorf("fail getting tickets from district %s: %s", district.Name(), err.Error())
+			msgs = append(msgs, formatTicketFailMessage(district, plateNumber))
+			continue
 		}
 		msgs = append(msgs, formatTicketMessage(district, plateNumber, tickets))
 	}
@@ -25,6 +28,10 @@ func Notify(notificationChannel models.NotificationChannel, plateNumber string, 
 	if err := notificationChannel.Send(reportMsg); err != nil {
 		log.Errorf("fail sending report of tickets: %s", err.Error())
 	}
+}
+
+func formatTicketFailMessage(district models.District, plateNumber string) string {
+	return fmt.Sprintf("La consulta de infracciones en %s (%s) falló ❌", district.Name(), plateNumber)
 }
 
 func formatTicketMessage(district models.District, plateNumber string, tickets []models.Ticket) string {
@@ -42,7 +49,7 @@ func formatTicketMessage(district models.District, plateNumber string, tickets [
 
 	for _, ticket := range tickets {
 		ticketsStrings = append(ticketsStrings, fmt.Sprintf("• 💰 *%s* 🆔 %s 📕 %s 📅 %s ⏰ %s",
-			formatMoney(ticket.AmountInCents), ticket.TicketNumber, ticket.Description, formatDate(ticket.Date), formatDate(ticket.DueDate)))
+			formatMoney(ticket.AmountInCents), ticket.TicketNumber, ticket.DescriptionEscaped(), formatDate(ticket.Date), formatDate(ticket.DueDate)))
 	}
 	return fmt.Sprintf("%s\n%s", reportTitle, strings.Join(ticketsStrings, "\n"))
 }
@@ -52,5 +59,8 @@ func formatMoney(cents int64) string {
 }
 
 func formatDate(date time.Time) string {
+	if date.IsZero() {
+		return "N/A"
+	}
 	return date.Format("2006-01-02")
 }
